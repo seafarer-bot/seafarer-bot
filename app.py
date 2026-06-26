@@ -112,11 +112,12 @@ else:
         st.chat_message("user").markdown(prompt)
         
         # Save User message to DB
-        supabase.table("chat_history").insert({
-            "user_id": current_user_id,
-            "role": "user",
-            "content": prompt
-        }).execute()
+        # Save User message to DB
+supabase.table("chat_history").insert({
+    "user_id": current_user_id,
+    "role": "user",
+    "content": prompt
+}).execute()
 
         # Generate AI response
         model = genai.GenerativeModel('gemini-1.5-flash')
