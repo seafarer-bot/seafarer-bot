@@ -1,4 +1,11 @@
-streamlit
-supabase
-google-generativeai
-extra-streamlit-components
+streamlit==1.46.1
+
+supabase==2.15.3
+
+google-genai==1.28.0
+
+extra-streamlit-components==0.1.81
+
+httpx
+
+python-dotenv
