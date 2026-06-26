@@ -3,52 +3,56 @@ from supabase import create_client, Client
 import google.generativeai as genai
 import extra_streamlit_components as stx
 from datetime import datetime, timedelta
+import time
 
-# --- 1. INITIALIZATION ---
+# --- 1. SETTINGS & INITIALIZATION ---
 st.set_page_config(page_title="The Compass", page_icon="⚓", layout="centered")
 
-# Initialize Supabase
 @st.cache_resource
-def init_supabase():
-    # Ensure URL has no trailing slashes or extra paths
+def init_connections():
+    # Clean URL and Key
     url = st.secrets["SUPABASE_URL"].strip().rstrip("/")
     key = st.secrets["SUPABASE_KEY"].strip()
-    return create_client(url, key)
+    supabase_client = create_client(url, key)
+    # Init Gemini
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    return supabase_client
 
-supabase = init_supabase()
+try:
+    supabase = init_connections()
+except Exception as e:
+    st.error("Connection to Support Station failed. Check your Internet/Settings.")
+    st.stop()
 
-# Initialize Gemini
-genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-
-# Initialize Cookie Manager
 cookie_manager = stx.CookieManager()
 
-# --- 2. AUTHENTICATION FUNCTIONS ---
-def sign_up_user(email, password):
+# --- 2. AUTHENTICATION HELPERS ---
+def sign_up(email, password):
     try:
         res = supabase.auth.sign_up({"email": email, "password": password})
-        return res
+        return res.user
     except Exception as e:
-        st.error(f"Signup Error: {e}")
+        st.error(f"Signup failed: {e}")
         return None
 
-def login_user(email, password):
+def login(email, password):
     try:
         res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-        return res
+        return res.user
     except Exception as e:
-        st.error("Login failed. Check your email/password or confirm if account exists.")
+        st.error("Login failed. Check your details or ensure account is created.")
         return None
 
-# --- 3. SESSION & COOKIE LOGIC ---
-# We check both the cookie and the session state to ensure instant login
+# --- 3. SESSION MANAGEMENT ---
+# Get cookie once at start
 if "user_id" not in st.session_state:
-    st.session_state.user_id = cookie_manager.get(cookie="seafarer_session_id")
+    val = cookie_manager.get(cookie="seafarer_session_id")
+    st.session_state.user_id = val
 
-# --- 4. UI: LOGIN/SIGNUP OR CHAT ---
+# --- 4. LOGIN / SIGNUP UI ---
 if not st.session_state.user_id:
     st.title("⚓ The Compass")
-    st.info("Maritime Mental Resilience Assistant")
+    st.subheader("Maritime Mental Resilience Assistant")
     
     tab1, tab2 = st.tabs(["Login", "Sign Up"])
     
@@ -56,100 +60,110 @@ if not st.session_state.user_id:
         l_email = st.text_input("Email", key="l_email")
         l_pass = st.text_input("Password", type="password", key="l_pass")
         if st.button("Login", use_container_width=True):
-            res = login_user(l_email, l_pass)
-            if res and res.user:
-                # Save to Cookie (90 days)
-                cookie_manager.set("seafarer_session_id", res.user.id, expires_at=datetime.now() + timedelta(days=90))
-                # Save to Session State (Instant)
-                st.session_state.user_id = res.user.id
-                st.success("Login Successful!")
+            user = login(l_email, l_pass)
+            if user:
+                cookie_manager.set("seafarer_session_id", user.id, expires_at=datetime.now() + timedelta(days=90))
+                st.session_state.user_id = user.id
+                st.success("Authenticated. Redirecting...")
+                time.sleep(1)
                 st.rerun()
 
     with tab2:
-        st.write("Create an account to save your progress.")
         s_email = st.text_input("Email", key="s_email")
         s_pass = st.text_input("Password", type="password", key="s_pass")
-        st.caption("Password must be at least 6 characters.")
+        st.caption("Password must be 6+ characters.")
         if st.button("Create Account", use_container_width=True):
             if len(s_pass) < 6:
                 st.error("Password too short.")
             else:
-                res = sign_up_user(s_email, s_pass)
-                if res:
-                    st.success("Account created! You can now switch to the Login tab.")
+                user = sign_up(s_email, s_pass)
+                if user:
+                    st.success("Account created! Please switch to the Login tab.")
 
+# --- 5. CHAT INTERFACE (LOGGED IN) ---
 else:
-    # --- 5. LOGGED IN: THE CHAT INTERFACE ---
-    current_user_id = st.session_state.user_id
+    u_id = st.session_state.user_id
     
+    # Sidebar with Logout and Safety Resources
     with st.sidebar:
-        st.title("⚓ Navigation")
-        st.write(f"Logged in as Seafarer")
-        if st.button("Logout"):
+        st.title("⚓ Ship's Office")
+        if st.button("Logout / Clear Session"):
             cookie_manager.delete("seafarer_session_id")
             st.session_state.user_id = None
             st.rerun()
+        
+        st.divider()
+        st.warning("🆘 EMERGENCY RESOURCES")
+        st.write("If you are in physical danger or need immediate human help:")
+        st.write("- **ISWAN:** +44 7309 561815 (WhatsApp)")
+        st.write("- **SeafarerHelp:** 24/7 Hotline available")
 
     st.title("⚓ The Compass")
-    st.write("How are you handling things on watch today?")
 
-    # Load History from Database
+    # Initialize History
     if "messages" not in st.session_state:
         try:
-            res = supabase.table("chat_history").select("role, content").eq("user_id", current_user_id).order("created_at").execute()
+            res = supabase.table("chat_history").select("role, content").eq("user_id", u_id).order("created_at").execute()
             st.session_state.messages = [{"role": m["role"], "content": m["content"]} for m in res.data]
         except:
             st.session_state.messages = []
 
-    # Display Chat History
+    # Display History
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
     # Chat Input
-    if prompt := st.chat_input("I'm feeling stressed because..."):
-        # Display User message
+    if prompt := st.chat_input("How are you feeling on watch today?"):
         st.chat_message("user").markdown(prompt)
         
-        # Save User message to DB
-        # Save User message to DB
-supabase.table("chat_history").insert({
-    "user_id": current_user_id,
-    "role": "user",
-    "content": prompt
-}).execute()
+        # 1. Save User Message to DB (Try/Except to prevent red screen)
+        try:
+            supabase.table("chat_history").insert({
+                "user_id": u_id,
+                "role": "user",
+                "content": prompt
+            }).execute()
+        except Exception as e:
+            st.error("Warning: Message not saved to history, but AI will still answer.")
 
-        # Generate AI response
+        # 2. Get AI Response
         model = genai.GenerativeModel('gemini-1.5-flash')
         
-        # Format history for Gemini (roles must be 'user' or 'model')
-        history_for_ai = []
+        # Prepare memory for Gemini
+        history_for_gemini = []
         for m in st.session_state.messages:
-            history_for_ai.append({
-                "role": "user" if m["role"] == "user" else "model",
-                "parts": [m["content"]]
-            })
+            role = "user" if m["role"] == "user" else "model"
+            history_for_gemini.append({"role": role, "parts": [m["content"]]})
         
-        chat = model.start_chat(history=history_for_ai)
+        chat = model.start_chat(history=history_for_gemini)
         
         with st.chat_message("assistant"):
             try:
-                # System instructions integrated into the call
-                full_prompt = f"Context: You are a maritime mental resilience coach. A seafarer is talking to you. Help them with actionable exercises. User input: {prompt}"
-                response = chat.send_message(full_prompt)
+                # Optimized System Prompt
+                context = (
+                    "You are 'The Compass', a mental resilience bot for seafarers. "
+                    "Provide short, actionable mental or physical exercises. "
+                    "If a user mentions not eating, self-harm, or severe physical symptoms, "
+                    "advise them to contact the Medical Officer or ISWAN immediately."
+                )
+                response = chat.send_message(f"{context}\n\nUser: {prompt}")
                 ai_text = response.text
                 st.markdown(ai_text)
                 
-                # Save AI message to DB
-                supabase.table("chat_history").insert({
-                    "user_id": current_user_id,
-                    "role": "assistant",
-                    "content": ai_text
-                }).execute()
+                # 3. Save AI Message to DB
+                try:
+                    supabase.table("chat_history").insert({
+                        "user_id": u_id,
+                        "role": "assistant",
+                        "content": ai_text
+                    }).execute()
+                except:
+                    pass
                 
                 # Update Session State
                 st.session_state.messages.append({"role": "user", "content": prompt})
                 st.session_state.messages.append({"role": "assistant", "content": ai_text})
                 
             except Exception as e:
-                st.error("The communication link is patchy. Try again in a moment.")
+                st.error("The AI is currently off-watch. Try again in a minute.")
